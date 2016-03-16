@@ -871,6 +871,9 @@ exports.simpleWindow = function(obj) {
 
   obj.redraw();  // Draw the first frame.
 
+  // Trigger rendering of subsequent frames.
+  obj.framerate(settings.framerate || 0);
+
   return obj;
 };
 
