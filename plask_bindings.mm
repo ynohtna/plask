@@ -280,33 +280,7 @@ inline v8::Local<TypeName> PersistentToLocal(
 }
 
 
-int SizeOfArrayElementForType(v8::ExternalArrayType type) {
-  switch (type) {
-    case v8::kExternalInt8Array:
-    case v8::kExternalUint8Array:
-    case v8::kExternalUint8ClampedArray:
-      return 1;
-    case v8::kExternalInt16Array:
-    case v8::kExternalUint16Array:
-      return 2;
-    case v8::kExternalInt32Array:
-    case v8::kExternalUint32Array:
-    case v8::kExternalFloat32Array:
-      return 4;
-    case v8::kExternalFloat64Array:
-      return 8;
-    default:
-      abort();
-      return 0;
-  }
-}
-
-// FIXME ugly, but currently not a better way to access the backing store
-// than just to wrap the ArrayBuffer in a new ArrayBufferView.
-// Seems there is a difference between:
-//   - new Float32Array(2);
-//   - new Float32Array([0, 1]);
-// The first doesn't have HasIndexedPropertiesInExternalArrayData
+// Get the underlying data / size for an ArrayBuffer / ArrayBufferView.
 bool GetTypedArrayBytes(
     v8::Local<v8::Value> value, void** data, intptr_t* size) {
 
@@ -325,19 +299,10 @@ bool GetTypedArrayBytes(
     return false;
   }
 
-  // Always create a new wrapper, see above.
-  v8::Local<v8::ArrayBufferView> view =
-      v8::Uint8Array::New(buffer, offset, length);
+  v8::ArrayBuffer::Contents contents = buffer->GetContents();
 
-  if (!view->HasIndexedPropertiesInExternalArrayData())
-    abort();
-
-  //printf("indexed %d\n", view->HasIndexedPropertiesInExternalArrayData());
-  //printf("pixel %d\n", view->HasIndexedPropertiesInPixelData());
-
-  *data = view->GetIndexedPropertiesExternalArrayData();
-  *size = view->GetIndexedPropertiesExternalArrayDataLength() *
-          SizeOfArrayElementForType(view->GetIndexedPropertiesExternalArrayDataType());
+  *data = reinterpret_cast<char*>(contents.Data()) + offset;
+  *size = length;
   return true;
 }
 
@@ -495,11 +460,21 @@ class WebGLActiveInfo {
     v8::Local<v8::FunctionTemplate> ft = v8::Local<v8::FunctionTemplate>::New(
         isolate, WebGLActiveInfo::GetTemplate(isolate));
     v8::Local<v8::Object> obj = ft->InstanceTemplate()->NewInstance();
-    obj->Set(v8::String::NewFromUtf8(isolate, "size"), v8::Integer::New(isolate, size), v8::ReadOnly);
-    obj->Set(v8::String::NewFromUtf8(isolate, "type"),
-             v8::Integer::NewFromUnsigned(isolate, type),
-             v8::ReadOnly);
-    obj->Set(v8::String::NewFromUtf8(isolate, "name"), v8::String::NewFromUtf8(isolate, name), v8::ReadOnly);
+    obj->DefineOwnProperty(
+        isolate->GetCurrentContext(),
+        v8::String::NewFromUtf8(isolate, "size"),
+        v8::Integer::New(isolate, size),
+        v8::ReadOnly).FromJust();
+    obj->DefineOwnProperty(
+        isolate->GetCurrentContext(),
+        v8::String::NewFromUtf8(isolate, "type"),
+        v8::Integer::NewFromUnsigned(isolate, type),
+        v8::ReadOnly).FromJust();
+    obj->DefineOwnProperty(
+        isolate->GetCurrentContext(),
+        v8::String::NewFromUtf8(isolate, "name"),
+        v8::String::NewFromUtf8(isolate, name),
+        v8::ReadOnly).FromJust();
     return obj;
   }
 
@@ -755,7 +730,8 @@ class SyphonServerWrapper {
     return args.GetReturnValue().SetUndefined();
   }
 
-  DEFINE_METHOD(bindToDrawFrameOfSize, 2)    SyphonServer* server = ExtractSyphonServerPointer(args.Holder());
+  DEFINE_METHOD(bindToDrawFrameOfSize, 2)
+    SyphonServer* server = ExtractSyphonServerPointer(args.Holder());
     BOOL res = [server bindToDrawFrameOfSize:NSMakeSize(args[0]->Int32Value(),
                                                         args[1]->Int32Value())];
     return args.GetReturnValue().Set((bool)res);
@@ -1416,8 +1392,6 @@ class NSOpenGLContextWrapper {
 
   // void writeImage(filetype, filename, opts)
   static void writeImage(const v8::FunctionCallbackInfo<v8::Value>& args) {
-    NSOpenGLContext* context = ExtractContextPointer(args.Holder());
-
     GLint viewport[4];
     glGetIntegerv(GL_VIEWPORT, viewport);
     int width  = viewport[2];
@@ -1555,24 +1529,28 @@ class NSOpenGLContextWrapper {
   }
 
   // void blendEquation(GLenum mode)
-  DEFINE_METHOD(blendEquation, 1)    glBlendEquation(args[0]->Uint32Value());
+  DEFINE_METHOD(blendEquation, 1)
+    glBlendEquation(args[0]->Uint32Value());
     return args.GetReturnValue().SetUndefined();
   }
 
   // void blendEquationSeparate(GLenum modeRGB, GLenum modeAlpha)
-  DEFINE_METHOD(blendEquationSeparate, 2)    glBlendEquationSeparate(args[0]->Uint32Value(), args[1]->Uint32Value());
+  DEFINE_METHOD(blendEquationSeparate, 2)
+    glBlendEquationSeparate(args[0]->Uint32Value(), args[1]->Uint32Value());
     return args.GetReturnValue().SetUndefined();
   }
 
 
   // void blendFunc(GLenum sfactor, GLenum dfactor)
-  DEFINE_METHOD(blendFunc, 2)    glBlendFunc(args[0]->Uint32Value(), args[1]->Uint32Value());
+  DEFINE_METHOD(blendFunc, 2)
+    glBlendFunc(args[0]->Uint32Value(), args[1]->Uint32Value());
     return args.GetReturnValue().SetUndefined();
   }
 
   // void blendFuncSeparate(GLenum srcRGB, GLenum dstRGB,
   //                        GLenum srcAlpha, GLenum dstAlpha)
-  DEFINE_METHOD(blendFuncSeparate, 4)    glBlendFuncSeparate(args[0]->Uint32Value(), args[1]->Uint32Value(),
+  DEFINE_METHOD(blendFuncSeparate, 4)
+    glBlendFuncSeparate(args[0]->Uint32Value(), args[1]->Uint32Value(),
                         args[2]->Uint32Value(), args[3]->Uint32Value());
     return args.GetReturnValue().SetUndefined();
   }
@@ -1614,12 +1592,14 @@ class NSOpenGLContextWrapper {
   }
 
   // GLenum checkFramebufferStatus(GLenum target)
-  DEFINE_METHOD(checkFramebufferStatus, 1)    return args.GetReturnValue().Set(v8::Integer::NewFromUnsigned(isolate,
+  DEFINE_METHOD(checkFramebufferStatus, 1)
+    return args.GetReturnValue().Set(v8::Integer::NewFromUnsigned(isolate,
         glCheckFramebufferStatus(args[0]->Uint32Value())));
   }
 
   // void clear(GLbitfield mask)
-  DEFINE_METHOD(clear, 1)    glClear(args[0]->Uint32Value());
+  DEFINE_METHOD(clear, 1)
+    glClear(args[0]->Uint32Value());
     return args.GetReturnValue().SetUndefined();
   }
 
@@ -2657,24 +2637,21 @@ class NSOpenGLContextWrapper {
     if (type != GL_UNSIGNED_BYTE)
       return v8_utils::ThrowError(isolate, "readPixels only supports GL_UNSIGNED_BYTE.");
 
-    if (!args[6]->IsObject())
-      return v8_utils::ThrowError(isolate, "readPixels only supports Uint8Array.");
+    GLvoid* data = NULL;
+    GLsizeiptr size = 0;
 
-    v8::Handle<v8::Object> data = v8::Handle<v8::Object>::Cast(args[6]);
-
-    if (data->GetIndexedPropertiesExternalArrayDataType() !=
-        v8::kExternalUnsignedByteArray)
-      return v8_utils::ThrowError(isolate, "readPixels only supports Uint8Array.");
+    if (!GetTypedArrayBytes(args[6], &data, &size))
+      return v8_utils::ThrowError(isolate, "Data must be a TypedArray.");
 
     // TODO(deanm):  From the spec (requires synthesizing gl errors):
     //   If pixels is non-null, but is not large enough to retrieve all of the
     //   pixels in the specified rectangle taking into account pixel store
     //   modes, an INVALID_OPERATION value is generated.
-    if (data->GetIndexedPropertiesExternalArrayDataLength() < width*height*4)
-      return v8_utils::ThrowError(isolate, "Uint8Array buffer too small.");
+    if (size < width*height*4)
+      return v8_utils::ThrowError(isolate, "TypedArray buffer too small.");
 
-    glReadPixels(x, y, width, height, format, type,
-                 data->GetIndexedPropertiesExternalArrayData());
+    glReadPixels(x, y, width, height, format, type, data);
+
     return args.GetReturnValue().SetUndefined();
   }
 
@@ -3695,17 +3672,22 @@ class NSWindowWrapper {
     // There is some discussion about this at:
     //   https://bugzilla.mozilla.org/show_bug.cgi?id=780361
     // readonly attribute GLsizei drawingBufferWidth;
-    gl->Set(
+    gl->DefineOwnProperty(
+        isolate->GetCurrentContext(),
         v8::String::NewFromUtf8(isolate, "drawingBufferWidth"),
         v8::Integer::New(isolate, bwidth),
-        v8::ReadOnly);
+        v8::ReadOnly).FromJust();
     // readonly attribute GLsizei drawingBufferHeight;
-    gl->Set(
+    gl->DefineOwnProperty(
+        isolate->GetCurrentContext(),
         v8::String::NewFromUtf8(isolate, "drawingBufferHeight"),
         v8::Integer::New(isolate, bheight),
-        v8::ReadOnly);
+        v8::ReadOnly).FromJust();
 
-    args.This()->Set(v8::String::NewFromUtf8(isolate, "context"), gl);
+    args.This()->DefineOwnProperty(
+        isolate->GetCurrentContext(),
+        v8::String::NewFromUtf8(isolate, "context"),
+        gl).FromJust();
 
 #if PLASK_GPUSKIA
     SkSurface* sk_surface = NULL;
@@ -4414,6 +4396,15 @@ class SkPathWrapper {
       { "kUnionPathOp", SkPathOp::kUnion_SkPathOp },  //!< union (inclusive-or) the two paths
       { "kXORPathOp", SkPathOp::kXOR_SkPathOp },  //!< exclusive-or the two paths
       { "kReverseDifferencePathOp", SkPathOp::kReverseDifference_SkPathOp },  //!< subtract the first path from the op path
+      // NOTE(deanm): These should have the same values as the PathOp version,
+      // but they are different constants in Skia so also have them additionally
+      // here.  Note there is also kReplaceOp which has no PathOp version.
+      { "kDifferenceOp", SkRegion::kDifference_Op },  //!< subtract the op region from the first region
+      { "kIntersectOp", SkRegion::kIntersect_Op },   //!< intersect the two regions
+      { "kUnionOp", SkRegion::kUnion_Op },       //!< union (inclusive-or) the two regions
+      { "kXOROp", SkRegion::kXOR_Op },         //!< exclusive-or the two regions
+      { "kReverseDifferenceOp", SkRegion::kReverseDifference_Op },  /** subtract the first region from the op region */
+      { "kReplaceOp", SkRegion::kReplace_Op },     //!< replace the dst region with the op region
       { "kMoveVerb",  SkPath::kMove_Verb },   //!< iter.next returns 1 point
       { "kLineVerb",  SkPath::kLine_Verb },   //!< iter.next returns 2 points
       { "kQuadVerb",  SkPath::kQuad_Verb },   //!< iter.next returns 3 points
@@ -4445,6 +4436,8 @@ class SkPathWrapper {
       METHOD_ENTRY( op ),
       METHOD_ENTRY( getPoints ),
       METHOD_ENTRY( getVerbs ),
+      METHOD_ENTRY( getFillType ),
+      METHOD_ENTRY( setFillType ),
     };
 
     for (size_t i = 0; i < arraysize(constants); ++i) {
@@ -4744,6 +4737,19 @@ class SkPathWrapper {
     delete[] verbs;
 
     return args.GetReturnValue().Set(res);
+  }
+
+  // int getFillType()
+  DEFINE_METHOD(getFillType, 0)
+    SkPath* path = ExtractPointer(args.Holder());
+    return args.GetReturnValue().Set(v8::Uint32::New(isolate, path->getFillType()));
+  }
+
+  // void setFillType(int)
+  DEFINE_METHOD(setFillType, 1)
+    SkPath* path = ExtractPointer(args.Holder());
+    path->setFillType(static_cast<SkPath::FillType>(v8_utils::ToInt32(args[0])));
+    return args.GetReturnValue().SetUndefined();
   }
 
   // void SkPath(SkPath? path_to_copy)
@@ -5215,7 +5221,7 @@ class SkPaintWrapper {
   // void setAlpha(float a)
   //
   // Set the alpha of the paint color, leaving rgb unchanged.
-  DEFINE_METHOD(setAlpha, 1);
+  DEFINE_METHOD(setAlpha, 1)
     SkPaint* paint = ExtractPointer(args.Holder());
     paint->setAlpha(Clamp(v8_utils::ToInt32WithDefault(args[0], 255), 0, 255));
     return args.GetReturnValue().SetUndefined();
@@ -5546,6 +5552,13 @@ class SkPaintWrapper {
 };
 
 
+// TODO(deanm): Should we use the Signature to enforce this instead?
+#define SKCANVAS_PAINT_ARG0 \
+    if (!SkPaintWrapper::HasInstance(isolate, args[0])) \
+      return v8_utils::ThrowTypeError(isolate, "First argument not an SkPaint"); \
+    SkPaint* paint = SkPaintWrapper::ExtractPointer( \
+        v8::Handle<v8::Object>::Cast(args[0]))
+
 class SkCanvasWrapper {
  public:
   static v8::Persistent<v8::FunctionTemplate>& GetTemplate(v8::Isolate* isolate) {
@@ -5697,19 +5710,13 @@ class SkCanvasWrapper {
         fbitmap = FreeImage_Load(format, *filename, 0);
         if (!fbitmap)
           return v8_utils::ThrowError(isolate, "Couldn't load image.");
-      } else if (args[1]->IsObject()) {
-        v8::Local<v8::Object> data = v8::Local<v8::Object>::Cast(args[1]);
-        if (!data->HasIndexedPropertiesInExternalArrayData())
-          return v8_utils::ThrowError(isolate, "Data must be an ExternalArrayData.");
-        int element_size = SizeOfArrayElementForType(
-            data->GetIndexedPropertiesExternalArrayDataType());
-        // FreeImage's annoying Windows types...
-        DWORD size = data->GetIndexedPropertiesExternalArrayDataLength() *
-            element_size;
-        BYTE* datadata = reinterpret_cast<BYTE*>(
-            data->GetIndexedPropertiesExternalArrayData());
+      } else if (args[1]->IsArrayBuffer() || args[1]->IsArrayBufferView()) {
+        void* datadata = NULL;
+        intptr_t datasize = 0;
+        if (!GetTypedArrayBytes(args[1], &datadata, &datasize))
+          return v8_utils::ThrowError(isolate, "Data must be a TypedArray.");
 
-        FIMEMORY* mem = FreeImage_OpenMemory(datadata, size);
+        FIMEMORY* mem = FreeImage_OpenMemory(reinterpret_cast<BYTE*>(datadata), datasize);
         FREE_IMAGE_FORMAT format = FreeImage_GetFileTypeFromMemory(mem, 0);
         if (format == FIF_UNKNOWN || !FreeImage_FIFSupportsReading(format))
           return v8_utils::ThrowError(isolate, "Couldn't detect image type.");
@@ -5786,12 +5793,33 @@ class SkCanvasWrapper {
     args.This()->SetAlignedPointerInInternalField(0, canvas);
     args.This()->SetAlignedPointerInInternalField(1, doc);
     // Direct pixel access via array[] indexing.
-    args.This()->SetIndexedPropertiesToPixelData(
-        reinterpret_cast<uint8_t*>(bitmap->getPixels()), bitmap->getSize());
+    // NOTE(deanm): Previously pixel access was directly on the canvas object,
+    // however as TypedArrays developed V8 removed support for the arbitrary
+    // "indexed external data" on all objects.  There are two choices, try to
+    // make the canvas element a TypedArray, either doing some prototype chain
+    // setup (not sure this would work for TypedArrays), or just having a real
+    // TypedArray as a property on the canvas.  This unfortunately breaks
+    // compatibility but it is probably the better choice.
+    v8::Handle<v8::ArrayBuffer> pixels_data = v8::ArrayBuffer::New(
+        isolate, bitmap->getPixels(), bitmap->getSize());  // Externalized
+    v8::Handle<v8::Uint8ClampedArray> pixels = v8::Uint8ClampedArray::New(
+        pixels_data, 0, bitmap->getSize());
+    // NOTE(deanm): I hope that attaching additionaly properties to the
+    // TypedArray doesn't have any performance ramifications.  I don't know
+    // about the internal JIT implementation of TypedArrays, but brief testing
+    // didn't seem to show any negative impact.  Fingers crossed.
+#if 0  // NOTE(deanm): For now don't do it unless becomes really inconvenient.
+    pixels->Set(v8::String::NewFromUtf8(isolate, "width"),
+                v8::Integer::NewFromUnsigned(isolate, bitmap->width()));
+    pixels->Set(v8::String::NewFromUtf8(isolate, "height"),
+                v8::Integer::NewFromUnsigned(isolate, bitmap->height()));
+#endif
+
     args.This()->Set(v8::String::NewFromUtf8(isolate, "width"),
                      v8::Integer::NewFromUnsigned(isolate, bitmap->width()));
     args.This()->Set(v8::String::NewFromUtf8(isolate, "height"),
                      v8::Integer::NewFromUnsigned(isolate, bitmap->height()));
+    args.This()->Set(v8::String::NewFromUtf8(isolate, "pixels"), pixels);
 
     // Notify the GC that we have a possibly large amount of data allocated
     // behind this object for bitmap backed canvases.
@@ -5891,7 +5919,12 @@ class SkCanvasWrapper {
     SkPath* path = SkPathWrapper::ExtractPointer(
         v8::Handle<v8::Object>::Cast(args[0]));
 
-    canvas->clipPath(*path);  // TODO(deanm): Handle the optional argument.
+    SkRegion::Op op = args[1]->IsUint32() ?
+        static_cast<SkRegion::Op>(args[1]->Uint32Value()) : SkRegion::kIntersect_Op;
+    bool aa = args[2]->BooleanValue();  // Defaults to false.
+
+    canvas->clipPath(*path, op, aa);
+
     return args.GetReturnValue().SetUndefined();
   }
 
@@ -5900,12 +5933,7 @@ class SkCanvasWrapper {
   // Draw a circle centered at (`x`, `y`) of radius `radius`.
   static void drawCircle(const v8::FunctionCallbackInfo<v8::Value>& args) {
     SkCanvas* canvas = ExtractPointer(args.Holder());
-    // TODO(deanm): Should we use the Signature to enforce this instead?
-    if (!SkPaintWrapper::HasInstance(isolate, args[0]))
-      return args.GetReturnValue().SetUndefined();
-
-    SkPaint* paint = SkPaintWrapper::ExtractPointer(
-        v8::Handle<v8::Object>::Cast(args[0]));
+    SKCANVAS_PAINT_ARG0;
 
     canvas->drawCircle(SkDoubleToScalar(args[1]->NumberValue()),
                        SkDoubleToScalar(args[2]->NumberValue()),
@@ -5919,12 +5947,7 @@ class SkCanvasWrapper {
   // Draw a line between (`x0`, `y0`) and (`x1`, `y1`).
   static void drawLine(const v8::FunctionCallbackInfo<v8::Value>& args) {
     SkCanvas* canvas = ExtractPointer(args.Holder());
-    // TODO(deanm): Should we use the Signature to enforce this instead?
-    if (!SkPaintWrapper::HasInstance(isolate, args[0]))
-      return args.GetReturnValue().SetUndefined();
-
-    SkPaint* paint = SkPaintWrapper::ExtractPointer(
-        v8::Handle<v8::Object>::Cast(args[0]));
+    SKCANVAS_PAINT_ARG0;
 
     canvas->drawLine(SkDoubleToScalar(args[1]->NumberValue()),
                      SkDoubleToScalar(args[2]->NumberValue()),
@@ -5940,12 +5963,7 @@ class SkCanvasWrapper {
   // blending mode.
   static void drawPaint(const v8::FunctionCallbackInfo<v8::Value>& args) {
     SkCanvas* canvas = ExtractPointer(args.Holder());
-    // TODO(deanm): Should we use the Signature to enforce this instead?
-    if (!SkPaintWrapper::HasInstance(isolate, args[0]))
-      return args.GetReturnValue().SetUndefined();
-
-    SkPaint* paint = SkPaintWrapper::ExtractPointer(
-        v8::Handle<v8::Object>::Cast(args[0]));
+    SKCANVAS_PAINT_ARG0;
 
     canvas->drawPaint(*paint);
     return args.GetReturnValue().SetUndefined();
@@ -6044,15 +6062,10 @@ class SkCanvasWrapper {
   // style (see SkPaint#setStyle).
   static void drawPath(const v8::FunctionCallbackInfo<v8::Value>& args) {
     SkCanvas* canvas = ExtractPointer(args.Holder());
-    // TODO(deanm): Should we use the Signature to enforce this instead?
-    if (!SkPaintWrapper::HasInstance(isolate, args[0]))
-      return args.GetReturnValue().SetUndefined();
+    SKCANVAS_PAINT_ARG0;
 
     if (!SkPathWrapper::HasInstance(isolate, args[1]))
       return args.GetReturnValue().SetUndefined();
-
-    SkPaint* paint = SkPaintWrapper::ExtractPointer(
-        v8::Handle<v8::Object>::Cast(args[0]));
 
     SkPath* path = SkPathWrapper::ExtractPointer(
         v8::Handle<v8::Object>::Cast(args[1]));
@@ -6069,15 +6082,10 @@ class SkCanvasWrapper {
   // of [x0, y0, x1, y1, ...].
   static void drawPoints(const v8::FunctionCallbackInfo<v8::Value>& args) {
     SkCanvas* canvas = ExtractPointer(args.Holder());
-    // TODO(deanm): Should we use the Signature to enforce this instead?
-    if (!SkPaintWrapper::HasInstance(isolate, args[0]))
-      return args.GetReturnValue().SetUndefined();
+    SKCANVAS_PAINT_ARG0;
 
     if (!args[2]->IsArray())
       return args.GetReturnValue().SetUndefined();
-
-    SkPaint* paint = SkPaintWrapper::ExtractPointer(
-        v8::Handle<v8::Object>::Cast(args[0]));
 
     v8::Handle<v8::Array> data = v8::Handle<v8::Array>::Cast(args[2]);
     uint32_t data_len = data->Length();
@@ -6105,12 +6113,7 @@ class SkCanvasWrapper {
   // Draw a rectangle specified by the upper-left and bottom-right corners.
   static void drawRect(const v8::FunctionCallbackInfo<v8::Value>& args) {
     SkCanvas* canvas = ExtractPointer(args.Holder());
-    // TODO(deanm): Should we use the Signature to enforce this instead?
-    if (!SkPaintWrapper::HasInstance(isolate, args[0]))
-      return args.GetReturnValue().SetUndefined();
-
-    SkPaint* paint = SkPaintWrapper::ExtractPointer(
-        v8::Handle<v8::Object>::Cast(args[0]));
+    SKCANVAS_PAINT_ARG0;
 
     SkRect rect = { SkDoubleToScalar(args[1]->NumberValue()),
                     SkDoubleToScalar(args[2]->NumberValue()),
@@ -6125,12 +6128,7 @@ class SkCanvasWrapper {
   // Draw a rectangle with rounded corners of radius `xradius` and `yradius`.
   static void drawRoundRect(const v8::FunctionCallbackInfo<v8::Value>& args) {
     SkCanvas* canvas = ExtractPointer(args.Holder());
-    // TODO(deanm): Should we use the Signature to enforce this instead?
-    if (!SkPaintWrapper::HasInstance(isolate, args[0]))
-      return args.GetReturnValue().SetUndefined();
-
-    SkPaint* paint = SkPaintWrapper::ExtractPointer(
-        v8::Handle<v8::Object>::Cast(args[0]));
+    SKCANVAS_PAINT_ARG0;
 
     SkRect rect = { SkDoubleToScalar(args[1]->NumberValue()),
                     SkDoubleToScalar(args[2]->NumberValue()),
@@ -6148,12 +6146,7 @@ class SkCanvasWrapper {
   // Draw the string `str` with the bottom left corner starting at (`x`, `y`).
   static void drawText(const v8::FunctionCallbackInfo<v8::Value>& args) {
     SkCanvas* canvas = ExtractPointer(args.Holder());
-    // TODO(deanm): Should we use the Signature to enforce this instead?
-    if (!SkPaintWrapper::HasInstance(isolate, args[0]))
-      return args.GetReturnValue().SetUndefined();
-
-    SkPaint* paint = SkPaintWrapper::ExtractPointer(
-        v8::Handle<v8::Object>::Cast(args[0]));
+    SKCANVAS_PAINT_ARG0;
 
     v8::String::Utf8Value utf8(args[1]);
     canvas->drawText(*utf8, utf8.length(),
@@ -6169,15 +6162,10 @@ class SkCanvasWrapper {
   // `hoffset` and above or below the path by `voffset`.
   static void drawTextOnPathHV(const v8::FunctionCallbackInfo<v8::Value>& args) {
     SkCanvas* canvas = ExtractPointer(args.Holder());
-    // TODO(deanm): Should we use the Signature to enforce this instead?
-    if (!SkPaintWrapper::HasInstance(isolate, args[0]))
-      return args.GetReturnValue().SetUndefined();
+    SKCANVAS_PAINT_ARG0;
 
     if (!SkPathWrapper::HasInstance(isolate, args[1]))
       return args.GetReturnValue().SetUndefined();
-
-    SkPaint* paint = SkPaintWrapper::ExtractPointer(
-        v8::Handle<v8::Object>::Cast(args[0]));
 
     SkPath* path = SkPathWrapper::ExtractPointer(
         v8::Handle<v8::Object>::Cast(args[1]));

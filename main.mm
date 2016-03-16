@@ -78,6 +78,7 @@
 #include "plask_bindings.h"
 
 #include "v8.h"
+#include "libplatform/libplatform.h"  // v8::platform
 #include "node.h"
 #include "uv.h"
 
@@ -91,10 +92,14 @@
 #define EVENTLOOP_DEBUG_C(x) do { } while(0)
 #endif
 
+namespace {
+
 static bool g_should_quit = false;
 static int g_kqueue_fd = 0;
 static int g_main_thread_pipe_fd = 0;
 static int g_kqueue_thread_pipe_fd = 0;
+
+v8::Isolate* g_isolate;
 
 // We're running nibless, so we don't have the typical MainMenu.nib.  This code
 // sets up the "Apple Menu", the menu in the menu bar with your application
@@ -309,6 +314,13 @@ kevent_hook(int kq, const struct kevent *changelist, int nchanges,
       [event retain];
       [NSApp sendEvent:event];
       [event release];
+      // NOTE(deanm): I'm not sure of the reasoning, but Node disables the
+      // automatic microtask system in V8 (see Node commit 8dc6be17), which
+      // requires manually running the tasks.  It is not exactly clear to me
+      // the semantics of this within Node, but it seems we need to at least do
+      // it here for UI events.  Node additionally checks that the tick count
+      // in tick_info is 0, do we need similar logic?
+      g_isolate->RunMicrotasks();
     }
   }
 
@@ -325,6 +337,23 @@ kevent_hook(int kq, const struct kevent *changelist, int nchanges,
   }
   return res;
 }
+
+class MallocArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
+ public:
+  virtual void* Allocate(size_t length) override {
+    return calloc(length, 1);
+  }
+
+  virtual void* AllocateUninitialized(size_t length) override {
+    return malloc(length);
+  }
+
+  virtual void Free(void* data, size_t length) override {
+    free(data);
+  }
+};
+
+}  // namespace
 
 int main(int argc, char** argv) {
   NSAutoreleasePool* pool = [NSAutoreleasePool new];
@@ -369,27 +398,34 @@ int main(int argc, char** argv) {
   const char** exec_argv;
   node::Init(&argc, const_cast<const char**>(argv), &exec_argc, &exec_argv);
 
-  v8::Isolate* isolate = v8::Isolate::New();
+  v8::Platform* platform = v8::platform::CreateDefaultPlatform(4);
+  v8::V8::InitializePlatform(platform);
+
+  v8::V8::Initialize();  // Docs say this has to happen before Isolate::New
+
+  MallocArrayBufferAllocator ab_alloc;
+  v8::Isolate::CreateParams isolate_params;
+  isolate_params.array_buffer_allocator = &ab_alloc;
+  g_isolate = v8::Isolate::New(isolate_params);
 
   int exit_code = 0;
 
   {
-    v8::Isolate::Scope isolate_scope(isolate);
-    v8::V8::Initialize();
+    v8::Isolate::Scope isolate_scope(g_isolate);
 
-    v8::Locker locker(isolate);
-    v8::HandleScope handle_scope(isolate);
+    v8::Locker locker(g_isolate);
+    v8::HandleScope handle_scope(g_isolate);
 
-    v8::Local<v8::Context> context = v8::Context::New(isolate);
+    v8::Local<v8::Context> context = v8::Context::New(g_isolate);
     v8::Context::Scope context_scope(context);
 
     v8::Handle<v8::ObjectTemplate> plask_raw = v8::ObjectTemplate::New();
-    plask_setup_bindings(isolate, plask_raw);
-    context->Global()->Set(v8::String::NewFromUtf8(isolate, "PlaskRawMac"),
+    plask_setup_bindings(g_isolate, plask_raw);
+    context->Global()->Set(v8::String::NewFromUtf8(g_isolate, "PlaskRawMac"),
                            plask_raw->NewInstance());
 
     node::Environment* env = node::CreateEnvironment(
-        isolate, context, argc, argv, exec_argc, exec_argv);
+        g_isolate, context, argc, argv, exec_argc, exec_argv);
 
     {
 
@@ -422,11 +458,23 @@ int main(int argc, char** argv) {
       bool more = true;
       while (!g_should_quit && more) {
         NSAutoreleasePool* looppool = [NSAutoreleasePool new];
+
+        EVENTLOOP_DEBUG_C((printf("-> platform pump\n")));
+        while (v8::platform::PumpMessageLoop(platform, g_isolate)) {
+          EVENTLOOP_DEBUG_C((printf(" - had platform event\n")));
+        }
+        EVENTLOOP_DEBUG_C((printf("<- platform pump\n")));
+
         EVENTLOOP_DEBUG_C((printf("-> uv_run_once\n")));
         more = uv_run(uvloop, UV_RUN_ONCE);
         EVENTLOOP_DEBUG_C((printf("<- uv_run_once\n")));
         EVENTLOOP_DEBUG_C((printf(" - handles: %d\n", uvloop->active_handles)));
+
+        EVENTLOOP_DEBUG_C((printf("-> microtasks\n")));
+        EVENTLOOP_DEBUG_C((printf("<- microtasks\n")));
+
         if (more == false) {
+          while (v8::platform::PumpMessageLoop(platform, g_isolate)) { }
           node::EmitBeforeExit(env);
           more = uv_loop_alive(uvloop);
           if (uv_run(uvloop, UV_RUN_NOWAIT) != 0)
@@ -451,7 +499,7 @@ int main(int argc, char** argv) {
   }
 
 #ifndef NDEBUG
-  isolate->Dispose();
+  g_isolate->Dispose();
 #endif  // NDEBUG
 
   [pool release];
